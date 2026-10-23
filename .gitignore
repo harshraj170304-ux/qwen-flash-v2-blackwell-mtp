@@ -1,0 +1,6 @@
+*.log
+*.gguf
+*.tar.gz
+build/
+__pycache__/
+.cache/
