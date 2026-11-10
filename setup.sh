@@ -5,11 +5,11 @@ echo "==========================================================================
 echo "⚡ 1-CLICK HUIHUI-AI QWEN FLASH V2 (180B ABLITERATED) + MTP + HERMES AGENT"
 echo "=========================================================================="
 
-HF_TOKEN="${HF_TOKEN:-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}"
-export HF_TOKEN="$HF_TOKEN"
+# Ensure anonymous high-speed HF access without expired token interference
+unset HF_TOKEN 2>/dev/null || true
 export HF_HUB_ENABLE_HF_TRANSFER=1
 export HF_XET_HIGH_PERFORMANCE=1
-GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-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}}"
+GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
 export GH_TOKEN="$GH_TOKEN"
 
 # 1. System packages & tmux configuration
@@ -85,8 +85,8 @@ if [ ! -f "/marimo/llama.cpp/build/bin/llama-server" ]; then
   mkdir -p /marimo/llama.cpp/build/bin
   echo "  -> ⚡ Fast-downloading precompiled Blackwell MTP engine (~48 MB)..."
   
-  RELEASE_ASSET_URL="https://api.github.com/repos/harshraj170304-ux/qwen-flash-blackwell-molab/releases/assets/548882571"
-  if curl -fsSL -H "Authorization: token $GH_TOKEN" -H "Accept: application/octet-stream" -L "$RELEASE_ASSET_URL" -o /tmp/llama-server-blackwell.tar.gz 2>/dev/null && [ -s /tmp/llama-server-blackwell.tar.gz ]; then
+  RELEASE_URL="https://github.com/harshraj170304-ux/qwen-flash-blackwell-molab/releases/download/v1.0.0/llama-server-blackwell.tar.gz"
+  if curl -fsSL -L "$RELEASE_URL" -o /tmp/llama-server-blackwell.tar.gz 2>/dev/null && [ -s /tmp/llama-server-blackwell.tar.gz ]; then
     tar -xzf /tmp/llama-server-blackwell.tar.gz -C /marimo/llama.cpp/build/bin
     rm -f /tmp/llama-server-blackwell.tar.gz
     chmod +x /marimo/llama.cpp/build/bin/llama-* 2>/dev/null || true
