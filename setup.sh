@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -e
+export GIT_TERMINAL_PROMPT=0
 
 echo "=========================================================================="
 echo "⚡ 1-CLICK HUIHUI-AI QWEN FLASH V2 (180B ABLITERATED) + MTP + HERMES AGENT"
@@ -176,20 +177,25 @@ echo "🏛️ [7/8] Setting up Hermes Agent & Restoring Permanent Memory from Gi
 pip install -q hermes-agent 2>/dev/null || true
 
 GITHUB_USER="harshraj170304-ux"
-MEMORY_REPO="${MEMORY_REPO:-https://${GH_TOKEN}@github.com/${GITHUB_USER}/hermes-molab.git}"
 BACKUP_DIR="/tmp/hermes_repo"
 
 mkdir -p /root/.hermes /home/marimo/.hermes ~/.hermes ~/.config/hermes /marimo/storage
 
-if [ ! -d "$BACKUP_DIR/.git" ]; then
-  git clone "$MEMORY_REPO" "$BACKUP_DIR" 2>/dev/null || true
-else
-  cd "$BACKUP_DIR" && git pull --rebase origin main 2>/dev/null || true && cd /marimo
-fi
+if [ -n "$GH_TOKEN" ]; then
+  echo "  -> Fetching sessions & state database from $GITHUB_USER/hermes-molab..."
+  MEMORY_REPO="https://${GH_TOKEN}@github.com/${GITHUB_USER}/hermes-molab.git"
+  if [ ! -d "$BACKUP_DIR/.git" ]; then
+    git clone "$MEMORY_REPO" "$BACKUP_DIR" 2>/dev/null || true
+  else
+    cd "$BACKUP_DIR" && git pull --rebase origin main 2>/dev/null || true && cd /marimo
+  fi
 
-if [ -d "$BACKUP_DIR/hermes_data" ]; then
-  cp -rf "$BACKUP_DIR"/hermes_data/* "$BACKUP_DIR"/hermes_data/.* ~/.hermes/ 2>/dev/null || true
-  echo "  ✅ Restored Hermes state.db, SOUL.md, MEMORY.md, and past sessions!"
+  if [ -d "$BACKUP_DIR/hermes_data" ]; then
+    cp -rf "$BACKUP_DIR"/hermes_data/* "$BACKUP_DIR"/hermes_data/.* ~/.hermes/ 2>/dev/null || true
+    echo "  ✅ Restored Hermes state.db, SOUL.md, MEMORY.md, and past sessions!"
+  fi
+else
+  echo "  ℹ️ No GH_TOKEN provided. Skipping private GitHub chat backup/restore."
 fi
 
 cat << 'HERMES_CFG' > ~/.hermes/config.yaml
@@ -210,8 +216,9 @@ cp ~/.hermes/config.yaml /home/marimo/.hermes/config.yaml 2>/dev/null || true
 # hermes-sync CLI tool
 cat << 'SYNC_SCRIPT' > /usr/local/bin/hermes-sync
 #!/usr/bin/env bash
+export GIT_TERMINAL_PROMPT=0
 BACKUP_DIR="/tmp/hermes_repo"
-[ ! -d "$BACKUP_DIR" ] && exit 0
+[ ! -d "$BACKUP_DIR/.git" ] && exit 0
 mkdir -p "$BACKUP_DIR/hermes_data"
 
 python3 -c '
