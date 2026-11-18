@@ -234,6 +234,13 @@ for p in ["/home/marimo/.hermes/state.db", "/root/.hermes/state.db", os.path.exp
 
 for dir in /home/marimo/.hermes /root/.hermes ~/.hermes; do
   if [ -d "$dir" ]; then
+    if [ -f "$dir/state.db" ] && [ -f "$BACKUP_DIR/hermes_data/state.db" ]; then
+      local_sz=$(stat -c%s "$dir/state.db" 2>/dev/null || echo 0)
+      repo_sz=$(stat -c%s "$BACKUP_DIR/hermes_data/state.db" 2>/dev/null || echo 0)
+      if [ "$local_sz" -lt 500000 ] && [ "$repo_sz" -gt 1000000 ]; then
+        continue
+      fi
+    fi
     cp -rf "$dir"/* "$dir"/.* "$BACKUP_DIR/hermes_data/" 2>/dev/null || true
   fi
 done
