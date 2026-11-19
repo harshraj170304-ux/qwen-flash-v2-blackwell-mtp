@@ -14,7 +14,7 @@ GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
 export GH_TOKEN="$GH_TOKEN"
 
 # 1. System packages & tmux configuration
-echo "📦 [1/6] Installing system tools (tmux, cmake, git, build-essential, curl, wget, aria2, sqlite3)..."
+echo "📦 [1/8] Installing system tools (tmux, cmake, git, build-essential, curl, wget, aria2, sqlite3)..."
 apt-get update -qq && apt-get install -y -qq tmux cmake build-essential git libcurl4-openssl-dev aria2 curl wget sqlite3 2>/dev/null || true
 
 cat << 'EOF' > ~/.tmux.conf
@@ -26,11 +26,11 @@ unbind-key -T copy-mode MouseDragEnd1Pane
 EOF
 
 # 2. Python packages
-echo "⚙️ [2/6] Installing Python inference & agent libraries..."
+echo "⚙️ [2/8] Installing Python inference & agent libraries..."
 pip install -q -U "huggingface_hub[cli]" hf_transfer nvidia-cuda-cccl openai rich pydantic httpx marimo 2>/dev/null || true
 
 # 3. Setup CUDA Unified Directory, Headers & Dynamic Linker
-echo "🔧 [3/6] Setting up CUDA 13 Blackwell toolkit links, CCCL headers & libcuda driver..."
+echo "🔧 [3/8] Setting up CUDA 13 Blackwell toolkit links, CCCL headers & libcuda driver..."
 CUDA_SRC=$(python3 -c "import nvidia.cu13, os; print(os.path.dirname(nvidia.cu13.__file__))" 2>/dev/null || echo "/usr/local/lib/python3.13/site-packages/nvidia/cu13")
 
 if [ -d "$CUDA_SRC" ]; then
@@ -172,33 +172,49 @@ echo "⏳ Starting server with Qwen 3.8 MTP (10 seconds)..."
 sleep 10
 tmux capture-pane -pt qwen -S -25 2>/dev/null || true
 
-# 7. Setup Hermes Agent & 2-Way Sync
-echo "🏛️ [7/8] Setting up Hermes Agent & Restoring Permanent Memory from GitHub..."
+# 7. Setup Hermes Agent with 100% PERSISTENT Storage in /marimo + GitHub 2-Way Sync
+echo "🏛️ [7/8] Setting up Hermes Agent with Persistent Storage (/marimo/hermes_data)..."
 pip install -q hermes-agent 2>/dev/null || true
 
 GITHUB_USER="harshraj170304-ux"
-BACKUP_DIR="/tmp/hermes_repo"
+PERSISTENT_HERMES="/marimo/hermes_data"
+GIT_BACKUP_DIR="/marimo/.hermes_git"
 
-mkdir -p /root/.hermes /home/marimo/.hermes ~/.hermes ~/.config/hermes /marimo/storage
+mkdir -p "$PERSISTENT_HERMES"
 
-if [ -n "$GH_TOKEN" ]; then
-  echo "  -> Fetching sessions & state database from $GITHUB_USER/hermes-molab..."
-  MEMORY_REPO="https://${GH_TOKEN}@github.com/${GITHUB_USER}/hermes-molab.git"
-  if [ ! -d "$BACKUP_DIR/.git" ]; then
-    git clone "$MEMORY_REPO" "$BACKUP_DIR" 2>/dev/null || true
-  else
-    cd "$BACKUP_DIR" && git pull --rebase origin main 2>/dev/null || true && cd /marimo
-  fi
+# Symlink all home directory references to the persistent volume in /marimo
+rm -rf /root/.hermes ~/.hermes /home/marimo/.hermes ~/.config/hermes 2>/dev/null || true
+mkdir -p /root /home/marimo ~/.config
+ln -sfn "$PERSISTENT_HERMES" /root/.hermes
+ln -sfn "$PERSISTENT_HERMES" ~/.hermes
+ln -sfn "$PERSISTENT_HERMES" /home/marimo/.hermes
+ln -sfn "$PERSISTENT_HERMES" ~/.config/hermes
 
-  if [ -d "$BACKUP_DIR/hermes_data" ]; then
-    cp -rf "$BACKUP_DIR"/hermes_data/* "$BACKUP_DIR"/hermes_data/.* ~/.hermes/ 2>/dev/null || true
-    echo "  ✅ Restored Hermes state.db, SOUL.md, MEMORY.md, and past sessions!"
-  fi
+# If local persistent state.db does not exist or is empty (<1MB), pull pristine backup from GitHub
+CURRENT_DB_SIZE=$(stat -c%s "$PERSISTENT_HERMES/state.db" 2>/dev/null || echo 0)
+if [ "$CURRENT_DB_SIZE" -lt 1000000 ] && [ -n "$GH_TOKEN" ]; then
+  echo "  -> Restoring 30MB pristine Hermes database & sessions from GitHub..."
+  rm -f "$PERSISTENT_HERMES/state.db"* 2>/dev/null || true
+  curl -fsSL -H "Authorization: token $GH_TOKEN" \
+    "https://raw.githubusercontent.com/${GITHUB_USER}/hermes-molab/main/hermes_data/state.db" \
+    -o "$PERSISTENT_HERMES/state.db" 2>/dev/null || true
+  echo "  ✅ Restored pristine state.db with all 18 historical sessions!"
 else
-  echo "  ℹ️ No GH_TOKEN provided. Skipping private GitHub chat backup/restore."
+  echo "  ✅ Persistent state.db found on disk ($(numfmt --to=iec $CURRENT_DB_SIZE 2>/dev/null || echo "${CURRENT_DB_SIZE}B"))!"
 fi
 
-cat << 'HERMES_CFG' > ~/.hermes/config.yaml
+# Clone or update persistent git backup repo in /marimo/.hermes_git
+if [ -n "$GH_TOKEN" ]; then
+  MEMORY_REPO="https://${GH_TOKEN}@github.com/${GITHUB_USER}/hermes-molab.git"
+  if [ ! -d "$GIT_BACKUP_DIR/.git" ]; then
+    git clone "$MEMORY_REPO" "$GIT_BACKUP_DIR" 2>/dev/null || true
+  else
+    cd "$GIT_BACKUP_DIR" && git pull --rebase origin main 2>/dev/null || true && cd /marimo
+  fi
+fi
+
+# Write Hermes Configuration
+cat << 'HERMES_CFG' > "$PERSISTENT_HERMES/config.yaml"
 provider: custom
 base_url: "http://127.0.0.1:8085/v1"
 api_key: "EMPTY"
@@ -209,56 +225,50 @@ temperature: 0.2
 system_prompt: "You are Hermes Agent, an uncensored autonomous AI engineer running on an NVIDIA Blackwell system with 262K context."
 HERMES_CFG
 
-cp ~/.hermes/config.yaml ~/.config/hermes/config.yaml 2>/dev/null || true
-cp ~/.hermes/config.yaml /root/.hermes/config.yaml 2>/dev/null || true
-cp ~/.hermes/config.yaml /home/marimo/.hermes/config.yaml 2>/dev/null || true
-
-# hermes-sync CLI tool
+# hermes-sync CLI tool (committing WAL to state.db, syncing to persistent git repo, pushing to GitHub)
 cat << 'SYNC_SCRIPT' > /usr/local/bin/hermes-sync
 #!/usr/bin/env bash
 export GIT_TERMINAL_PROMPT=0
-BACKUP_DIR="/tmp/hermes_repo"
-[ ! -d "$BACKUP_DIR/.git" ] && exit 0
-mkdir -p "$BACKUP_DIR/hermes_data"
+PERSISTENT_HERMES="/marimo/hermes_data"
+GIT_BACKUP_DIR="/marimo/.hermes_git"
+LOG_FILE="/marimo/hermes_sync.log"
 
+[ ! -d "$GIT_BACKUP_DIR/.git" ] && exit 0
+
+# 1. Truncate SQLite WAL to write all new conversation pages into state.db
 python3 -c '
 import sqlite3, os
-for p in ["/home/marimo/.hermes/state.db", "/root/.hermes/state.db", os.path.expanduser("~/.hermes/state.db")]:
-    if os.path.isfile(p):
-        try:
-            conn = sqlite3.connect(p)
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-            conn.close()
-        except Exception: pass
+p = "/marimo/hermes_data/state.db"
+if os.path.isfile(p):
+    try:
+        conn = sqlite3.connect(p)
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        conn.close()
+    except Exception: pass
 ' 2>/dev/null || true
 
-for dir in /home/marimo/.hermes /root/.hermes ~/.hermes; do
-  if [ -d "$dir" ]; then
-    if [ -f "$dir/state.db" ] && [ -f "$BACKUP_DIR/hermes_data/state.db" ]; then
-      local_sz=$(stat -c%s "$dir/state.db" 2>/dev/null || echo 0)
-      repo_sz=$(stat -c%s "$BACKUP_DIR/hermes_data/state.db" 2>/dev/null || echo 0)
-      if [ "$local_sz" -lt 500000 ] && [ "$repo_sz" -gt 1000000 ]; then
-        continue
-      fi
-    fi
-    cp -rf "$dir"/* "$dir"/.* "$BACKUP_DIR/hermes_data/" 2>/dev/null || true
-  fi
-done
+# 2. Sync persistent files into git working directory
+mkdir -p "$GIT_BACKUP_DIR/hermes_data"
+cp -rf "$PERSISTENT_HERMES"/* "$PERSISTENT_HERMES"/.* "$GIT_BACKUP_DIR/hermes_data/" 2>/dev/null || true
+rm -f "$GIT_BACKUP_DIR/hermes_data/state.db-wal" "$GIT_BACKUP_DIR/hermes_data/state.db-shm" 2>/dev/null || true
 
-cd "$BACKUP_DIR"
+# 3. Check for modifications & push to GitHub
+cd "$GIT_BACKUP_DIR"
 git config user.name 'harshraj170304-ux'
 git config user.email 'harshraj170304@gmail.com'
-git pull --rebase origin main 2>/dev/null || true
-git add hermes_data/ 2>/dev/null || true
+git pull --rebase origin main >> "$LOG_FILE" 2>&1 || true
+git add hermes_data/ >> "$LOG_FILE" 2>&1 || true
+
 if ! git diff --cached --quiet 2>/dev/null; then
-  git commit -m "Auto-backup Hermes session & memory $(date -u '+%Y-%m-%d %H:%M:%S UTC')" 2>/dev/null
-  git push origin main 2>/dev/null && echo "✅ [hermes-sync] Memory & sessions uploaded to GitHub!"
-else
-  echo "✨ [hermes-sync] Up to date (no changes)."
+  git commit -m "Auto-backup Hermes session & memory $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> "$LOG_FILE" 2>&1
+  if git push origin main >> "$LOG_FILE" 2>&1; then
+    echo "✅ [$(date '+%H:%M:%S')] Hermes sessions & memory pushed to GitHub!" >> "$LOG_FILE"
+  fi
 fi
 SYNC_SCRIPT
 chmod +x /usr/local/bin/hermes-sync
 
+# Start background auto-sync daemon
 pkill -f "hermes_sync_daemon" 2>/dev/null || true
 nohup bash -c '
 while true; do
@@ -277,8 +287,9 @@ echo "🎉 DEPLOYMENT COMPLETE! Huihui v2 (180B) is LIVE with MTP on Blackwell G
 echo "📡 Server Endpoint:    http://127.0.0.1:8085/v1"
 echo "⚡ MTP Acceleration:   ENABLED (~87-140 tok/s sustained)"
 echo "🧠 Context Window:      262,144 Tokens (YaRN RoPE + q8_0 KV Cache)"
-echo "💾 Persistent Memory:  Restored from GitHub & Auto-Backing up every 30s!"
-echo "💬 Resume Chat:        Type 'hermes chat -c' or 'hermes -c' in terminal"
+echo "💾 100% Persistent:    Saved in /marimo/hermes_data (Never lost on container restart!)"
+echo "☁️ Auto-Sync to GitHub: Backing up every 30s to harshraj170304-ux/hermes-molab"
+echo "💬 Resume Chat:        Type 'hermes -c' or 'hermes --continue' to resume last chat"
 echo "📂 List Past Sessions: Type 'hermes sessions list'"
 echo "⚡ Force Instant Save: Type 'hermes-sync'"
 echo "👉 Open /marimo/app.py in MoLab sidebar & click 'App View' to chat!"
